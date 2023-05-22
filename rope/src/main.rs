@@ -5,7 +5,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use glfw::{Action, Context, Key, MouseButton, OpenGlProfileHint, WindowEvent, WindowHint};
+use glfw::{
+    ffi::glfwSwapInterval, Action, Context, Key, MouseButton, OpenGlProfileHint, WindowEvent,
+    WindowHint,
+};
 use rand::prelude::*;
 
 use math::{
@@ -287,47 +290,63 @@ fn main() {
     }
 }
 
+struct Knot {
+    position: Vec2F32,
+    velocity: Vec2F32,
+    neighbours: Vec<i32>,
+}
+
 struct Rope {
     fb_width: i32,
     fb_height: i32,
-    knot: Vec<Vec2F32>,
-    knot_velocity: Vec<Vec2F32>,
+    knots: Vec<Knot>,
     dragged: Option<usize>,
 }
 
 impl Rope {
     const KNOT_RADIUS: f32 = 32f32;
-    // const KNOT_COLOR: (u8, u8, u8) = basic::RED;
     const TARGET_DISTANCE: f32 = 200f32;
     const EPSILON: f32 = 1.0E-6f32;
-    const STIFFNESS: f32 = 20f32;
-    const ROPE_LENGTH: usize = 8;
+    const STIFFNESS: f32 = 30f32;
+    const ROPE_LENGTH: usize = 1;
 
     fn new(fb_width: i32, fb_height: i32) -> Rope {
         let mut rng = thread_rng();
         Rope {
             fb_width,
             fb_height,
-            knot: (0..Self::ROPE_LENGTH)
-                .map(|_| {
-                    Vec2F32::new(
+            knots: (0..Self::ROPE_LENGTH)
+                .map(|_| Knot {
+                    position: Vec2F32::new(
                         rng.gen_range(0f32..=1f32) * fb_width as f32,
                         rng.gen_range(0f32..=1f32) * fb_height as f32,
-                    )
+                    ),
+                    velocity: Vec2F32::same(0f32),
+                    neighbours: Vec::with_capacity(8),
                 })
                 .collect(),
-            knot_velocity: vec![Vec2F32::same(0f32); Self::ROPE_LENGTH],
             dragged: None,
         }
     }
 
     fn render(&mut self, draw_context: &mut DrawContext) {
-        for i in 1..self.knot.len() {
-            draw_context.line(self.knot[i - 1], self.knot[i], 30f32, basic::DK_GREY);
+        for i in 0..self.knots.len() {
+            let start_pt = self.knots[i].position;
+
+            for j in &self.knots[i].neighbours {
+                let end_pt = self.knots[*j as usize].position;
+
+                draw_context.line(start_pt, end_pt, 30f32, basic::DK_GREY);
+            }
         }
 
-        self.knot.iter().for_each(|&knot| {
-            draw_context.circle(knot.x, knot.y, Self::KNOT_RADIUS, basic::GREEN);
+        self.knots.iter().for_each(|knot| {
+            draw_context.circle(
+                knot.position.x,
+                knot.position.y,
+                Self::KNOT_RADIUS,
+                basic::GREEN,
+            );
         });
     }
 
@@ -336,21 +355,37 @@ impl Rope {
             WindowEvent::MouseButton(MouseButton::Button1, Action::Press, _) => {
                 let (mousex, mousey) = window.get_cursor_pos();
 
-                self.dragged = self.knot.iter().position(|&knot| {
-                    (knot - Vec2F32::new(mousex as f32, mousey as f32)).square_len()
+                self.dragged = self.knots.iter().position(|knot| {
+                    (knot.position - Vec2F32::new(mousex as f32, mousey as f32)).square_len()
                         <= Rope::KNOT_RADIUS * Rope::KNOT_RADIUS
                 });
-
-                println!("Dragged = {:?}", self.dragged);
             }
+
+            WindowEvent::MouseButton(MouseButton::Button2, Action::Press, _) => {
+                let (mousex, mousey) = window.get_cursor_pos();
+
+                self.knots
+                    .iter()
+                    .position(|knot| {
+                        (knot.position - Vec2F32::new(mousex as f32, mousey as f32)).square_len()
+                            <= Rope::KNOT_RADIUS * Rope::KNOT_RADIUS
+                    })
+                    .map(|parent| {
+                        let new_knot = Knot {
+                            position: get_cursor_position(window),
+                            velocity: Vec2F32::same(0f32),
+                            neighbours: vec![parent as i32],
+                        };
+
+                        let nid = self.knots.len() as i32;
+                        self.knots[parent].neighbours.push(nid);
+                        self.knots.push(new_knot);
+                    });
+            }
+
             WindowEvent::MouseButton(MouseButton::Button1, Action::Release, _) => {
                 self.dragged = None;
             }
-            // WindowEvent::CursorPos(x, y) => {
-            //     self.dragged.map(|dragged_knot| {
-            //         self.knot[dragged_knot] = Vec2F32::new(x as f32, y as f32);
-            //     });
-            // }
             _ => {}
         }
     }
@@ -358,33 +393,19 @@ impl Rope {
     fn update(&mut self, window: &mut glfw::Window, delta: f32) {
         self.dragged.map(|i| {
             let (mx, my) = window.get_cursor_pos();
-            self.knot[i] = Vec2F32::new(mx as f32, my as f32);
+            self.knots[i].position = Vec2F32::new(mx as f32, my as f32);
         });
 
-        self.knot_velocity[0] = Self::compute_knot_velocity(self.knot[0], &[self.knot[1]]);
-
-        for i in 1..self.knot.len() - 1 {
-            self.knot_velocity[i] =
-                Self::compute_knot_velocity(self.knot[i], &[self.knot[i - 1], self.knot[i + 1]]);
-        }
-
-        self.knot_velocity[self.knot.len() - 1] = Self::compute_knot_velocity(
-            self.knot[self.knot.len() - 1],
-            &[self.knot[self.knot.len() - 2]],
-        );
-
-        for i in 0..self.knot.len() {
-            let is_dragged = self.dragged.map_or(false, |d| d == i);
-            if !is_dragged {
-                self.knot[i] += self.knot_velocity[i] * delta;
-            }
-        }
+        self.compute_knots_velocity(delta);
     }
 
-    fn compute_knot_velocity(knot: Vec2F32, neighbours: &[Vec2F32]) -> Vec2F32 {
-        neighbours
-            .iter()
-            .fold(Vec2F32::same(0f32), |result, &neighbour| {
+    fn compute_knots_velocity(&mut self, delta: f32) {
+        for i in 0..self.knots.len() {
+            let mut velocity = Vec2F32::same(0f32);
+            let knot = self.knots[i].position;
+
+            for n in &self.knots[i].neighbours {
+                let neighbour = self.knots[*n as usize].position;
                 let len = (knot - neighbour).len();
                 let dir = if len > Self::EPSILON {
                     (knot - neighbour) / len
@@ -393,8 +414,14 @@ impl Rope {
                 };
 
                 let target = neighbour + dir * Self::TARGET_DISTANCE;
-                result + (target - knot) * Self::STIFFNESS
-            })
+                velocity += (target - knot) * Self::STIFFNESS;
+            }
+
+            let is_dragged = self.dragged.map_or(false, |d| d == i);
+            if !is_dragged {
+                self.knots[i].position += velocity * delta;
+            }
+        }
     }
 }
 
