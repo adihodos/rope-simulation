@@ -248,7 +248,7 @@ fn main() {
 
     let mut sim = {
         let (fb_width, fb_height) = window.get_framebuffer_size();
-        SimState::new(fb_width, fb_height)
+        Rope::new(fb_width, fb_height)
     };
 
     // let fb = Framebuffer::new(sim.fb_width as u32, sim.fb_height as u32)
@@ -264,7 +264,7 @@ fn main() {
         }
 
         let current_time = Instant::now();
-        let delta_time = ((current_time - last_time).as_millis() as f32) * 1.0E-3f32;
+        let delta_time = (current_time - last_time).as_secs_f32();
         last_time = current_time;
 
         unsafe {
@@ -277,16 +277,7 @@ fn main() {
             gl::ClearNamedFramebufferfi(0, gl::DEPTH_STENCIL, 0, 1f32, 0);
         }
 
-        // dc.triangle_shaded(
-        //     Vec2F32::new(0f32, 1200f32),
-        //     Vec2F32::new(1920f32, 1200f32),
-        //     Vec2F32::new(960f32, 0f32),
-        //     material_design::RED_900,
-        //     material_design::GREEN_900,
-        //     material_design::BLUE_900,
-        // );
-
-        sim.update(delta_time);
+        sim.update(&mut window, delta_time);
         sim.render(&mut dc);
 
         dc.flush(sim.fb_width as f32, sim.fb_height as f32);
@@ -296,30 +287,28 @@ fn main() {
     }
 }
 
-struct SimState {
+struct Rope {
     fb_width: i32,
     fb_height: i32,
-    head: Vec2F32,
-    tail: Vec<Vec2F32>,
-    tail_velocity: Vec<Vec2F32>,
-    dragging: bool,
+    knot: Vec<Vec2F32>,
+    knot_velocity: Vec<Vec2F32>,
+    dragged: Option<usize>,
 }
 
-impl SimState {
+impl Rope {
     const KNOT_RADIUS: f32 = 32f32;
-    const KNOT_COLOR: (u8, u8, u8) = basic::RED;
-    const TARGET_DISTANCE: f32 = 100f32;
-    const EPSILON: f32 = 1.0E-5f32;
-    const VELOCITY_MULTIPLIER: f32 = 10f32;
-    const TAIL_LENGTH: usize = 10;
+    // const KNOT_COLOR: (u8, u8, u8) = basic::RED;
+    const TARGET_DISTANCE: f32 = 200f32;
+    const EPSILON: f32 = 1.0E-6f32;
+    const STIFFNESS: f32 = 20f32;
+    const ROPE_LENGTH: usize = 8;
 
-    fn new(fb_width: i32, fb_height: i32) -> SimState {
+    fn new(fb_width: i32, fb_height: i32) -> Rope {
         let mut rng = thread_rng();
-        SimState {
+        Rope {
             fb_width,
             fb_height,
-            head: Vec2F32::new(fb_width as f32 / 2f32, fb_height as f32 / 2f32),
-            tail: (0..Self::TAIL_LENGTH)
+            knot: (0..Self::ROPE_LENGTH)
                 .map(|_| {
                     Vec2F32::new(
                         rng.gen_range(0f32..=1f32) * fb_width as f32,
@@ -327,20 +316,18 @@ impl SimState {
                     )
                 })
                 .collect(),
-            tail_velocity: vec![Vec2F32::new(0f32, 0f32); Self::TAIL_LENGTH],
-            dragging: false,
+            knot_velocity: vec![Vec2F32::same(0f32); Self::ROPE_LENGTH],
+            dragged: None,
         }
     }
 
     fn render(&mut self, draw_context: &mut DrawContext) {
-        draw_context.line(self.head, self.tail[0], 30f32, basic::DK_GREY);
-        (1..self.tail.len()).for_each(|i| {
-            draw_context.line(self.tail[i - 1], self.tail[i], 30f32, basic::DK_GREY);
-        });
+        for i in 1..self.knot.len() {
+            draw_context.line(self.knot[i - 1], self.knot[i], 30f32, basic::DK_GREY);
+        }
 
-        draw_context.circle(self.head.x, self.head.y, Self::KNOT_RADIUS, basic::RED);
-        self.tail.iter().for_each(|tail| {
-            draw_context.circle(tail.x, tail.y, Self::KNOT_RADIUS, basic::GREEN);
+        self.knot.iter().for_each(|&knot| {
+            draw_context.circle(knot.x, knot.y, Self::KNOT_RADIUS, basic::GREEN);
         });
     }
 
@@ -348,45 +335,66 @@ impl SimState {
         match *event {
             WindowEvent::MouseButton(MouseButton::Button1, Action::Press, _) => {
                 let (mousex, mousey) = window.get_cursor_pos();
-                self.dragging = (self.head - Vec2F32::new(mousex as f32, mousey as f32))
-                    .square_len()
-                    <= SimState::KNOT_RADIUS * SimState::KNOT_RADIUS;
+
+                self.dragged = self.knot.iter().position(|&knot| {
+                    (knot - Vec2F32::new(mousex as f32, mousey as f32)).square_len()
+                        <= Rope::KNOT_RADIUS * Rope::KNOT_RADIUS
+                });
+
+                println!("Dragged = {:?}", self.dragged);
             }
             WindowEvent::MouseButton(MouseButton::Button1, Action::Release, _) => {
-                self.dragging = false;
+                self.dragged = None;
             }
-            WindowEvent::CursorPos(x, y) => {
-                if self.dragging {
-                    self.head = Vec2F32::new(x as f32, y as f32);
-                }
-            }
+            // WindowEvent::CursorPos(x, y) => {
+            //     self.dragged.map(|dragged_knot| {
+            //         self.knot[dragged_knot] = Vec2F32::new(x as f32, y as f32);
+            //     });
+            // }
             _ => {}
         }
     }
 
-    fn update(&mut self, delta: f32) {
-        self.tail_velocity[0] = Self::compute_tail_velocity(self.head, self.tail[0], delta);
-        (1..self.tail.len()).for_each(|i| {
-            self.tail_velocity[i] =
-                Self::compute_tail_velocity(self.tail[i - 1], self.tail[i], delta);
+    fn update(&mut self, window: &mut glfw::Window, delta: f32) {
+        self.dragged.map(|i| {
+            let (mx, my) = window.get_cursor_pos();
+            self.knot[i] = Vec2F32::new(mx as f32, my as f32);
         });
 
-        for i in 0..self.tail.len() {
-            self.tail[i] += self.tail_velocity[i];
+        self.knot_velocity[0] = Self::compute_knot_velocity(self.knot[0], &[self.knot[1]]);
+
+        for i in 1..self.knot.len() - 1 {
+            self.knot_velocity[i] =
+                Self::compute_knot_velocity(self.knot[i], &[self.knot[i - 1], self.knot[i + 1]]);
+        }
+
+        self.knot_velocity[self.knot.len() - 1] = Self::compute_knot_velocity(
+            self.knot[self.knot.len() - 1],
+            &[self.knot[self.knot.len() - 2]],
+        );
+
+        for i in 0..self.knot.len() {
+            let is_dragged = self.dragged.map_or(false, |d| d == i);
+            if !is_dragged {
+                self.knot[i] += self.knot_velocity[i] * delta;
+            }
         }
     }
 
-    fn compute_tail_velocity(head: Vec2F32, tail: Vec2F32, delta: f32) -> Vec2F32 {
-        let len = (head - tail).len();
-        let dir = if len > Self::EPSILON {
-            (tail - head) / len
-        } else {
-            Vec2F32::new(1f32, 0f32)
-        };
+    fn compute_knot_velocity(knot: Vec2F32, neighbours: &[Vec2F32]) -> Vec2F32 {
+        neighbours
+            .iter()
+            .fold(Vec2F32::same(0f32), |result, &neighbour| {
+                let len = (knot - neighbour).len();
+                let dir = if len > Self::EPSILON {
+                    (knot - neighbour) / len
+                } else {
+                    Vec2F32::new(1f32, 0f32)
+                };
 
-        let target = head + dir * Self::TARGET_DISTANCE;
-        let tail_velocity = target - tail;
-        tail_velocity * delta * Self::VELOCITY_MULTIPLIER
+                let target = neighbour + dir * Self::TARGET_DISTANCE;
+                result + (target - knot) * Self::STIFFNESS
+            })
     }
 }
 
@@ -448,7 +456,7 @@ impl Framebuffer {
     }
 }
 
-fn handle_window_event(window: &mut glfw::Window, event: &glfw::WindowEvent, s: &mut SimState) {
+fn handle_window_event(window: &mut glfw::Window, event: &glfw::WindowEvent, s: &mut Rope) {
     match *event {
         glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => window.set_should_close(true),
         WindowEvent::FramebufferSize(w, h) => {
