@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{
     f32::consts,
     mem::size_of,
@@ -5,17 +7,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use glfw::{
-    ffi::glfwSwapInterval, Action, Context, Key, MouseButton, OpenGlProfileHint, WindowEvent,
-    WindowHint,
-};
+use glfw::{Action, Context, Key, MouseButton, OpenGlProfileHint, WindowEvent, WindowHint};
 use rand::prelude::*;
 
 use math::{
     color_palette::{basic, material_design, turbo_srgb},
     colors::RGBAColorF32,
     projection,
-    vec2::{is_unit_length, normalize, perp_vec, Vec2F32},
+    vec2::{normalize, perp_vec, Vec2F32},
     vertex_types::VertexPC,
 };
 
@@ -291,7 +290,6 @@ fn main() {
 
 struct Knot {
     position: Vec2F32,
-    velocity: Vec2F32,
     neighbours: Vec<i32>,
 }
 
@@ -316,7 +314,6 @@ impl Rope {
             knots: (0..Self::ROPE_LENGTH)
                 .map(|_| Knot {
                     position: Vec2F32::new(fb_width as f32 * 0.5f32, fb_height as f32 * 0.5f32),
-                    velocity: Vec2F32::same(0f32),
                     neighbours: Vec::with_capacity(8),
                 })
                 .collect(),
@@ -375,8 +372,6 @@ impl Rope {
                         let new_knot = Knot {
                             position: self.knots[parent].position
                                 + random_unit_vector() * Self::TARGET_DISTANCE,
-                            // get_cursor_position(window),
-                            velocity: Vec2F32::same(0f32),
                             neighbours: vec![parent as i32],
                         };
 
@@ -422,14 +417,6 @@ impl Rope {
 
             for j in 0..self.knots.len() {
                 if i != j && (knot - self.knots[j].position).len() <= Self::KNOT_RADIUS * 2f32 {
-                    // let len = (knot - self.knots[j].position).len();
-                    // let dir = if len > Self::EPSILON {
-                    //     (knot - self.knots[j].position) / len
-                    // } else {
-                    //     Vec2F32::new(1f32, 0f32)
-                    // };
-
-                    // velocity += dir * 5f32;
                     velocity += (knot - self.knots[j].position) * 0.5f32;
                 }
             }

@@ -264,8 +264,6 @@ where
 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self::Output {
-        use std::iter::FromIterator;
-
         Self::from_iter(
             self.as_slice()
                 .iter()
@@ -306,7 +304,6 @@ where
 {
     type Output = Self;
     fn mul(self, scalar: T) -> Self::Output {
-        use std::iter::FromIterator;
         Self::from_iter(self.as_slice().iter().map(|e| *e * scalar))
     }
 }
