@@ -15,7 +15,7 @@ use math::{
     color_palette::{basic, material_design, turbo_srgb},
     colors::RGBAColorF32,
     projection,
-    vec2::{normalize, perp_vec, Vec2F32},
+    vec2::{is_unit_length, normalize, perp_vec, Vec2F32},
     vertex_types::VertexPC,
 };
 
@@ -254,8 +254,6 @@ fn main() {
         Rope::new(fb_width, fb_height)
     };
 
-    // let fb = Framebuffer::new(sim.fb_width as u32, sim.fb_height as u32)
-    //     .expect("Failed to create framebuffer");
     let mut dc = DrawContext::new(4096).expect("Failed to create draw context!");
     let mut last_time = Instant::now();
 
@@ -270,6 +268,8 @@ fn main() {
         let delta_time = (current_time - last_time).as_secs_f32();
         last_time = current_time;
 
+        sim.update(&mut window, delta_time);
+
         unsafe {
             gl::ClearNamedFramebufferfv(
                 0,
@@ -280,7 +280,6 @@ fn main() {
             gl::ClearNamedFramebufferfi(0, gl::DEPTH_STENCIL, 0, 1f32, 0);
         }
 
-        sim.update(&mut window, delta_time);
         sim.render(&mut dc);
 
         dc.flush(sim.fb_width as f32, sim.fb_height as f32);
@@ -305,22 +304,18 @@ struct Rope {
 
 impl Rope {
     const KNOT_RADIUS: f32 = 32f32;
-    const TARGET_DISTANCE: f32 = 200f32;
-    const EPSILON: f32 = 1.0E-6f32;
-    const STIFFNESS: f32 = 30f32;
+    const TARGET_DISTANCE: f32 = 100f32;
+    const EPSILON: f32 = 0.000001f32;
+    const STIFFNESS: f32 = 20f32;
     const ROPE_LENGTH: usize = 1;
 
     fn new(fb_width: i32, fb_height: i32) -> Rope {
-        let mut rng = thread_rng();
         Rope {
             fb_width,
             fb_height,
             knots: (0..Self::ROPE_LENGTH)
                 .map(|_| Knot {
-                    position: Vec2F32::new(
-                        rng.gen_range(0f32..=1f32) * fb_width as f32,
-                        rng.gen_range(0f32..=1f32) * fb_height as f32,
-                    ),
+                    position: Vec2F32::new(fb_width as f32 * 0.5f32, fb_height as f32 * 0.5f32),
                     velocity: Vec2F32::same(0f32),
                     neighbours: Vec::with_capacity(8),
                 })
@@ -345,6 +340,12 @@ impl Rope {
                 knot.position.x,
                 knot.position.y,
                 Self::KNOT_RADIUS,
+                basic::BLACK,
+            );
+            draw_context.circle(
+                knot.position.x,
+                knot.position.y,
+                Self::KNOT_RADIUS * 0.75f32,
                 basic::GREEN,
             );
         });
@@ -372,7 +373,9 @@ impl Rope {
                     })
                     .map(|parent| {
                         let new_knot = Knot {
-                            position: get_cursor_position(window),
+                            position: self.knots[parent].position
+                                + random_unit_vector() * Self::TARGET_DISTANCE,
+                            // get_cursor_position(window),
                             velocity: Vec2F32::same(0f32),
                             neighbours: vec![parent as i32],
                         };
@@ -415,6 +418,20 @@ impl Rope {
 
                 let target = neighbour + dir * Self::TARGET_DISTANCE;
                 velocity += (target - knot) * Self::STIFFNESS;
+            }
+
+            for j in 0..self.knots.len() {
+                if i != j && (knot - self.knots[j].position).len() <= Self::KNOT_RADIUS * 2f32 {
+                    // let len = (knot - self.knots[j].position).len();
+                    // let dir = if len > Self::EPSILON {
+                    //     (knot - self.knots[j].position) / len
+                    // } else {
+                    //     Vec2F32::new(1f32, 0f32)
+                    // };
+
+                    // velocity += dir * 5f32;
+                    velocity += (knot - self.knots[j].position) * 0.5f32;
+                }
             }
 
             let is_dragged = self.dragged.map_or(false, |d| d == i);
@@ -497,4 +514,14 @@ fn handle_window_event(window: &mut glfw::Window, event: &glfw::WindowEvent, s: 
 fn get_cursor_position(window: &glfw::Window) -> Vec2F32 {
     let (cx, cy) = window.get_cursor_pos();
     Vec2F32::new(cx as f32, cy as f32)
+}
+
+fn random_unit_vector() -> Vec2F32 {
+    let mut rng = thread_rng();
+    loop {
+        let v = Vec2F32::new(rng.gen_range(-1f32..=1f32), rng.gen_range(-1f32..=1f32));
+        if v.square_len() < 1f32 {
+            break v;
+        }
+    }
 }
